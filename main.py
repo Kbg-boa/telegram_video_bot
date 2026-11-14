@@ -1,7 +1,4 @@
-Set-Location C:\Users\bienv\telegram_video_bot
-
-@'
-import asyncio
+﻿import asyncio
 import logging
 import os
 import random
@@ -15,8 +12,8 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import yt_dlp
 
-TOKEN = os.environ.get("TOKEN", "9114777347:AAEIdalqbeGRl6cyqqSwCSkYTL6x7MzUx1I")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "7785533633"))
+TOKEN = os.environ.get("TOKEN", "VVVVVV")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 FREE_DAILY_LIMIT = int(os.environ.get("FREE_DAILY_LIMIT", "3"))
 REFERRAL_BONUS = int(os.environ.get("REFERRAL_BONUS", "2"))
 PREMIUM_STARS_PRICE = int(os.environ.get("PREMIUM_STARS_PRICE", "50"))
@@ -449,8 +446,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-'@ | Set-Content -Path main.py -Encoding utf8
-
-git add main.py
-git commit -m "Complete main.py with short callback keys, SQLite migration, ads, referrals and Stars"
-git push origin main
