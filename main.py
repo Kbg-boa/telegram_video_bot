@@ -401,6 +401,7 @@ async def main():
     site = web.TCPSite(async_runner, "0.0.0.0", port)
     await site.start()
     logging.info(f"Web server started on port {port}")
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
