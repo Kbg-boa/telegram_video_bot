@@ -1,5 +1,6 @@
 ﻿import asyncio
 import logging
+import glob
 import os
 import random
 import sqlite3
@@ -47,6 +48,31 @@ def store_pending_url(url: str) -> str:
         PENDING_URLS.clear()
     PENDING_URLS[key] = url
     return key
+
+MAX_TELEGRAM_BYTES = 50 * 1024 * 1024
+
+def cleanup_temp_files(file_token: str):
+    for path in glob.glob(f"*{file_token}*"):
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            logging.warning(f"Impossible de supprimer le fichier temporaire : {path}")
+
+def ensure_under_telegram_limit(filepath: str):
+    if not filepath or not os.path.exists(filepath):
+        raise FileNotFoundError("Fichier t?l?charg? introuvable.")
+    size = os.path.getsize(filepath)
+    if size > MAX_TELEGRAM_BYTES:
+        size_mb = round(size / (1024 * 1024), 1)
+        raise ValueError(
+            f"Le fichier fait {size_mb} Mo (limite Telegram Bot API : 50 Mo). Essaie le format Audio (MP3) ou un lien plus court."
+        )
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
+def has_postgres() -> bool:
+    return DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")
 
 def init_db():
     conn = sqlite3.connect("bot_users.db")
@@ -168,7 +194,7 @@ def set_premium_status(user_id, status_int):
     conn.commit()
     conn.close()
 
-def get_active_ad():
+def get_rotating_ad():
     conn = sqlite3.connect("bot_users.db")
     cursor = conn.cursor()
     cursor.execute("SELECT title, text, url, btn_text FROM ads ORDER BY id DESC LIMIT 1")
@@ -185,6 +211,54 @@ def save_new_ad(title, text, url, btn_text):
     cursor.execute("INSERT INTO ads (title, text, url, btn_text) VALUES (?, ?, ?, ?)", (title, text, url, btn_text))
     conn.commit()
     conn.close()
+
+def _is_valid_http_url(url: str) -> bool:
+    return url.startswith("http://") or url.startswith("https://")
+
+def add_ad_entry(title: str, text: str, url: str, btn_text: str):
+    safe_url = url if _is_valid_http_url(url) else "https://t.me"
+    conn = sqlite3.connect("bot_users.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO ads (title, text, url, btn_text) VALUES (?, ?, ?, ?)",
+        (title, text, safe_url, btn_text),
+    )
+    conn.commit()
+    conn.close()
+
+def list_ad_entries():
+    conn = sqlite3.connect("bot_users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, url FROM ads ORDER BY id ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def delete_ad_entry(ad_id: int) -> bool:
+    conn = sqlite3.connect("bot_users.db")
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM ads WHERE id = ?", (ad_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+def get_rotating_ad():
+    conn = sqlite3.connect("bot_users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT title, text, url, btn_text FROM ads")
+    rows = cursor.fetchall()
+    conn.close()
+    if rows:
+        chosen = random.choice(rows)
+        safe_url = chosen[2] if _is_valid_http_url(chosen[2] or "") else "https://t.me"
+        return {
+            "title": chosen[0],
+            "text": chosen[1],
+            "url": safe_url,
+            "btn_text": chosen[3],
+        }
+    return random.choice(DEFAULT_ADS)
 
 def get_bot_stats():
     conn = sqlite3.connect("bot_users.db")
@@ -226,6 +300,44 @@ async def cmd_start(message: types.Message):
         )
     except Exception:
         logging.exception("Erreur envoi reponse /start")
+
+@dp.message(Command("myplan"))
+async def cmd_myplan(message: types.Message):
+    register_user(message.from_user.id, message.from_user.username)
+    allowed, rem_free, bonus, is_prem = can_user_download(message.from_user.id)
+
+    conn = sqlite3.connect("bot_users.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT downloads_count, daily_count FROM users WHERE user_id = ?",
+        (message.from_user.id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    total_dl = row[0] if row else 0
+    used_today = row[1] if row else 0
+
+    if is_prem:
+        status_block = (
+            "?? Statut : Premium (Actif)\n"
+            "? T?l?chargements : Illimit?s & sans publicit?"
+        )
+    else:
+        status_block = (
+            "??? Statut : Gratuit (Freemium)\n"
+            f"?? Utilis?s aujourd'hui : {used_today}/{FREE_DAILY_LIMIT}\n"
+            f"?? Gratuits restants aujourd'hui : {rem_free}\n"
+            f"?? Cr?dits bonus (parrainage) : {bonus}\n"
+            f"?? Peut t?l?charger maintenant : {'Oui' if allowed else 'Non (quota atteint)'}"
+        )
+
+    await message.answer(
+        "?? Mon Espace & Quota\n\n"
+        f"{status_block}\n"
+        f"?? Total t?l?charg? : {total_dl}\n\n"
+        "?? /invite pour gagner des cr?dits bonus ? /premium pour passer sans pub"
+    )
 
 @dp.message(Command("invite"))
 async def cmd_invite(message: types.Message):
@@ -294,6 +406,43 @@ async def cmd_setad(message: types.Message):
     save_new_ad(parts[0], parts[1], parts[2], parts[3])
     await message.answer("✅ Publicité mise à jour en direct !")
 
+@dp.message(Command("addad"))
+async def cmd_addad(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("? Commande r?serv?e ? l'administrateur.")
+        return
+    raw = (message.text or "").replace("/addad", "", 1).strip()
+    parts = [p.strip() for p in raw.split("|")]
+    if len(parts) != 4:
+        await message.answer("Usage : /addad Titre | Texte pub | https://lien | Texte bouton")
+        return
+    add_ad_entry(parts[0], parts[1], parts[2], parts[3])
+    await message.answer("? Nouvelle publicit? ajout?e ? la rotation !")
+
+@dp.message(Command("listads"))
+async def cmd_listads(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("? Commande r?serv?e ? l'administrateur.")
+        return
+    rows = list_ad_entries()
+    if not rows:
+        await message.answer("?? Aucune publicit? en base (rotation sur DEFAULT_ADS).")
+        return
+    lines = [f"#{r[0]} ? {r[1]} ({r[2]})" for r in rows]
+    await message.answer("?? Publicit?s actives :\n\n" + "\n".join(lines))
+
+@dp.message(Command("delad"))
+async def cmd_delad(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("? Commande r?serv?e ? l'administrateur.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Usage : /delad <id>")
+        return
+    ok = delete_ad_entry(int(parts[1]))
+    await message.answer("? Publicit? supprim?e." if ok else "?? ID de publicit? introuvable.")
+
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -333,13 +482,13 @@ async def handle_url(message: types.Message):
     builder.button(text="🎵 Audio (MP3)", callback_data=f"dl_audio|{url_key}")
     builder.button(text="📸 Image / Post", callback_data=f"dl_image|{url_key}")
     if not is_prem:
-        ad = get_active_ad()
+        ad = get_rotating_ad()
         builder.button(text=ad["btn_text"], url=ad["url"])
     builder.adjust(1)
 
     ad_block = ""
     if not is_prem:
-        ad = get_active_ad()
+        ad = get_rotating_ad()
         ad_block = f"\n\n━━━━━━━━━━━━━━━━━━━━\n{ad['title']}\n{ad['text']}"
 
     await message.answer(
@@ -360,7 +509,7 @@ async def process_download(callback: types.CallbackQuery):
         return
 
     if not is_prem:
-        ad = get_active_ad()
+        ad = get_rotating_ad()
         await callback.message.edit_text(
             f"{ad['title']}\n{ad['text']}\n\n⏳ Annonce affichée — préparation du téléchargement..."
         )
@@ -420,20 +569,18 @@ async def process_download(callback: types.CallbackQuery):
         await callback.message.edit_text("📤 Envoi sur Telegram...")
         consume_download_quota(callback.from_user.id)
         file_input = types.FSInputFile(filename)
-        caption = "🎥 Fichier prêt !" if is_prem else f"🎥 Fichier prêt !\n\n{get_active_ad()['title']}"
+        caption = "🎥 Fichier prêt !" if is_prem else f"🎥 Fichier prêt !\n\n{get_rotating_ad()['title']}"
         if action == "dl_video":
             await callback.message.answer_video(video=file_input, caption=caption)
         elif action == "dl_audio":
             await callback.message.answer_audio(audio=file_input, caption=caption)
         else:
             await callback.message.answer_photo(photo=file_input, caption=caption)
-        if os.path.exists(filename):
-            os.remove(filename)
+        cleanup_temp_files(file_id)
         await callback.message.delete()
     except Exception as e:
         await callback.message.edit_text(f"❌ Erreur : {str(e)}")
-        if "filename" in locals() and os.path.exists(filename):
-            os.remove(filename)
+        cleanup_temp_files(file_id)
 
 async def main():
     port = int(os.environ.get("PORT", 10000))
