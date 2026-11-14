@@ -1,3 +1,6 @@
+Set-Location C:\Users\bienv\telegram_video_bot
+
+@'
 import asyncio
 import logging
 import os
@@ -38,6 +41,15 @@ DEFAULT_ADS = [
         "btn_text": "🔗 Découvrir l'annonce"
     }
 ]
+
+PENDING_URLS = {}
+
+def store_pending_url(url: str) -> str:
+    key = uuid.uuid4().hex[:12]
+    if len(PENDING_URLS) > 2000:
+        PENDING_URLS.clear()
+    PENDING_URLS[key] = url
+    return key
 
 def init_db():
     conn = sqlite3.connect("bot_users.db")
@@ -193,6 +205,7 @@ init_db()
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
+    logging.info(f"/start recu de user_id={message.from_user.id} (@{message.from_user.username})")
     ref_id = None
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) == 2 and parts[1].startswith("ref_"):
@@ -202,13 +215,20 @@ async def cmd_start(message: types.Message):
             ref_id = None
     register_user(message.from_user.id, message.from_user.username, ref_id=ref_id)
     allowed, rem_free, bonus, is_prem = can_user_download(message.from_user.id)
-    quota_line = "👑 **Statut :** Premium (Illimité, sans pub)" if is_prem else f"🎟️ **Crédits restants :** `{rem_free}` gratuits/jour + `{bonus}` bonus parrainage"
-    await message.answer(
-        "👋 **Bienvenue sur le bot de téléchargement !**\n\n"
-        "🔗 Envoie un lien *(TikTok, YouTube, Instagram, Facebook, etc.)* pour commencer.\n"
-        f"{quota_line}\n\n"
-        "💡 Tape `/invite` pour parrainer ou `/premium` pour passer sans pub."
+    quota_line = (
+        "👑 Statut : Premium (Illimité, sans pub)"
+        if is_prem
+        else f"🎟️ Crédits restants : {rem_free} gratuits/jour + {bonus} bonus parrainage"
     )
+    try:
+        await message.answer(
+            "👋 Bienvenue sur le bot de téléchargement !\n\n"
+            "🔗 Envoie un lien (TikTok, YouTube, Instagram, Facebook, etc.) pour commencer.\n"
+            f"{quota_line}\n\n"
+            "💡 Tape /invite pour parrainer ou /premium pour passer sans pub."
+        )
+    except Exception:
+        logging.exception("Erreur envoi reponse /start")
 
 @dp.message(Command("invite"))
 async def cmd_invite(message: types.Message):
@@ -216,25 +236,30 @@ async def cmd_invite(message: types.Message):
     me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{message.from_user.id}"
     await message.answer(
-        "🎁 **Parrainage — Invite to Unlock**\n\n"
-        f"Partage ton lien à tes amis : chaque nouvel inscrit te rapporte **+{REFERRAL_BONUS} téléchargements bonus** !\n\n"
-        f"`{ref_link}`"
+        "🎁 Parrainage — Invite to Unlock\n\n"
+        f"Partage ton lien à tes amis : chaque nouvel inscrit te rapporte +{REFERRAL_BONUS} téléchargements bonus !\n\n"
+        f"{ref_link}"
     )
 
 @dp.message(Command("premium"))
 async def cmd_premium(message: types.Message):
     try:
+        builder = InlineKeyboardBuilder()
+        if PREMIUM_PAY_URL:
+            builder.button(text="💳 Lien de paiement externe", url=PREMIUM_PAY_URL)
+            builder.adjust(1)
         await message.answer_invoice(
-            title="Acc?s Premium Sans Pub",
-            description="T?l?chargements illimit?s et suppression des publicit?s.",
+            title="Accès Premium Sans Pub",
+            description="Téléchargements illimités et suppression des publicités.",
             payload=f"premium_{message.from_user.id}",
             provider_token="",
             currency="XTR",
             prices=[LabeledPrice(label="Premium", amount=PREMIUM_STARS_PRICE)],
+            reply_markup=builder.as_markup() if PREMIUM_PAY_URL else None,
         )
     except Exception as e:
         logging.exception("Erreur answer_invoice /premium")
-        await message.answer(f"? **Erreur lors de l'ouverture du paiement :** `{e}`")
+        await message.answer(f"❌ Erreur lors de l'ouverture du paiement : {e}")
 
 @dp.pre_checkout_query()
 async def on_pre_checkout(pre_checkout_query: PreCheckoutQuery):
@@ -243,7 +268,7 @@ async def on_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def on_successful_payment(message: types.Message):
     set_premium_status(message.from_user.id, 1)
-    await message.answer("🎉 **Merci ! Ton compte est maintenant Premium (sans pub et illimité).**")
+    await message.answer("🎉 Merci ! Ton compte est maintenant Premium (sans pub et illimité).")
 
 @dp.message(Command("setpremium"))
 async def cmd_setpremium(message: types.Message):
@@ -252,12 +277,12 @@ async def cmd_setpremium(message: types.Message):
         return
     parts = (message.text or "").split()
     if len(parts) != 3 or parts[2] not in ("0", "1"):
-        await message.answer("Usage : `/setpremium <user_id> <1|0>`")
+        await message.answer("Usage : /setpremium <user_id> <1|0>")
         return
     target_id = int(parts[1])
     status_val = int(parts[2])
     set_premium_status(target_id, status_val)
-    await message.answer(f"✅ Utilisateur `{target_id}` mis à jour : `is_premium = {status_val}`")
+    await message.answer(f"✅ Utilisateur {target_id} mis à jour : is_premium = {status_val}")
 
 @dp.message(Command("setad"))
 async def cmd_setad(message: types.Message):
@@ -267,10 +292,10 @@ async def cmd_setad(message: types.Message):
     raw = (message.text or "").replace("/setad", "", 1).strip()
     parts = [p.strip() for p in raw.split("|")]
     if len(parts) != 4:
-        await message.answer("Usage : `/setad Titre | Texte pub | https://lien | Texte bouton`")
+        await message.answer("Usage : /setad Titre | Texte pub | https://lien | Texte bouton")
         return
     save_new_ad(parts[0], parts[1], parts[2], parts[3])
-    await message.answer("✅ **Publicité mise à jour en direct !**")
+    await message.answer("✅ Publicité mise à jour en direct !")
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
@@ -279,10 +304,10 @@ async def cmd_stats(message: types.Message):
         return
     users, downloads, prem = get_bot_stats()
     await message.answer(
-        f"📊 **Statistiques en direct :**\n\n"
-        f"👥 Utilisateurs : `{users}`\n"
-        f"👑 Membres Premium : `{prem}`\n"
-        f"📥 Téléchargements : `{downloads}`"
+        "📊 Statistiques en direct :\n\n"
+        f"👥 Utilisateurs : {users}\n"
+        f"👑 Membres Premium : {prem}\n"
+        f"📥 Téléchargements : {downloads}"
     )
 
 @dp.message(F.text.regexp(r"https?://[^\s]+"))
@@ -297,18 +322,19 @@ async def handle_url(message: types.Message):
         kb.button(text="⭐ Passer Premium (/premium)", callback_data="show_premium_info")
         kb.adjust(1)
         await message.answer(
-            "⛔ **Quota journalier atteint !**\n\n"
-            f"Tu as utilisé tes `{FREE_DAILY_LIMIT}` téléchargements gratuits du jour et tes crédits bonus.\n"
-            f"Invite des amis pour gagner **+{REFERRAL_BONUS} crédits** ou passe en Premium :\n`{ref_link}`",
+            "⛔ Quota journalier atteint !\n\n"
+            f"Tu as utilisé tes {FREE_DAILY_LIMIT} téléchargements gratuits du jour et tes crédits bonus.\n"
+            f"Invite des amis pour gagner +{REFERRAL_BONUS} crédits ou passe en Premium :\n{ref_link}",
             reply_markup=kb.as_markup()
         )
         return
 
     url = message.text.strip()
+    url_key = store_pending_url(url)
     builder = InlineKeyboardBuilder()
-    builder.button(text="📥 Vidéo (MP4)", callback_data=f"dl_video|{url}")
-    builder.button(text="🎵 Audio (MP3)", callback_data=f"dl_audio|{url}")
-    builder.button(text="📸 Image / Post", callback_data=f"dl_image|{url}")
+    builder.button(text="📥 Vidéo (MP4)", callback_data=f"dl_video|{url_key}")
+    builder.button(text="🎵 Audio (MP3)", callback_data=f"dl_audio|{url_key}")
+    builder.button(text="📸 Image / Post", callback_data=f"dl_image|{url_key}")
     if not is_prem:
         ad = get_active_ad()
         builder.button(text=ad["btn_text"], url=ad["url"])
@@ -320,7 +346,7 @@ async def handle_url(message: types.Message):
         ad_block = f"\n\n━━━━━━━━━━━━━━━━━━━━\n{ad['title']}\n{ad['text']}"
 
     await message.answer(
-        "🎯 **Lien détecté ! Choisis ton format :**" + ad_block,
+        "🎯 Lien détecté ! Choisis ton format :" + ad_block,
         reply_markup=builder.as_markup()
     )
 
@@ -339,12 +365,17 @@ async def process_download(callback: types.CallbackQuery):
     if not is_prem:
         ad = get_active_ad()
         await callback.message.edit_text(
-            f"{ad['title']}\n{ad['text']}\n\n⏳ **Annonce affichée — préparation du téléchargement...**"
+            f"{ad['title']}\n{ad['text']}\n\n⏳ Annonce affichée — préparation du téléchargement..."
         )
         await asyncio.sleep(2)
 
-    action, url = callback.data.split("|", 1)
-    await callback.message.edit_text("⏳ **Téléchargement en cours...**")
+    action, url_key = callback.data.split("|", 1)
+    url = PENDING_URLS.get(url_key)
+    if not url:
+        await callback.message.edit_text("⚠️ Ce lien a expiré (redémarrage du serveur). Renvoie le lien SVP.")
+        return
+
+    await callback.message.edit_text("⏳ Téléchargement en cours...")
     file_id = str(uuid.uuid4())
     output_template = f"%(id)s_{file_id}.%(ext)s"
 
@@ -389,10 +420,10 @@ async def process_download(callback: types.CallbackQuery):
                 return ydl.prepare_filename(info)
 
         filename = await asyncio.to_thread(download_media)
-        await callback.message.edit_text("📤 **Envoi sur Telegram...**")
+        await callback.message.edit_text("📤 Envoi sur Telegram...")
         consume_download_quota(callback.from_user.id)
         file_input = types.FSInputFile(filename)
-        caption = "🎥 **Fichier prêt !**" if is_prem else f"🎥 **Fichier prêt !**\n\n{get_active_ad()['title']}"
+        caption = "🎥 Fichier prêt !" if is_prem else f"🎥 Fichier prêt !\n\n{get_active_ad()['title']}"
         if action == "dl_video":
             await callback.message.answer_video(video=file_input, caption=caption)
         elif action == "dl_audio":
@@ -403,7 +434,7 @@ async def process_download(callback: types.CallbackQuery):
             os.remove(filename)
         await callback.message.delete()
     except Exception as e:
-        await callback.message.edit_text(f"❌ **Erreur :** {str(e)}")
+        await callback.message.edit_text(f"❌ Erreur : {str(e)}")
         if "filename" in locals() and os.path.exists(filename):
             os.remove(filename)
 
@@ -418,3 +449,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+'@ | Set-Content -Path main.py -Encoding utf8
+
+git add main.py
+git commit -m "Complete main.py with short callback keys, SQLite migration, ads, referrals and Stars"
+git push origin main
