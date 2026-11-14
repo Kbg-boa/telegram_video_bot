@@ -211,19 +211,18 @@ async def cmd_invite(message: types.Message):
 
 @dp.message(Command("premium"))
 async def cmd_premium(message: types.Message):
-    builder = InlineKeyboardBuilder()
-    builder.button(text=f"⭐ Payer {PREMIUM_STARS_PRICE} Telegram Stars", pay=True)
-    if PREMIUM_PAY_URL:
-        builder.button(text="💳 Lien de paiement externe", url=PREMIUM_PAY_URL)
-    builder.adjust(1)
-    await message.answer_invoice(
-        title="Accès Premium Sans Pub",
-        description="Téléchargements illimités et suppression des publicités.",
-        payload=f"premium_{message.from_user.id}",
-        currency="XTR",
-        prices=[LabeledPrice(label="Premium", amount=PREMIUM_STARS_PRICE)],
-        reply_markup=builder.as_markup()
-    )
+    try:
+        await message.answer_invoice(
+            title="Acc?s Premium Sans Pub",
+            description="T?l?chargements illimit?s et suppression des publicit?s.",
+            payload=f"premium_{message.from_user.id}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label="Premium", amount=PREMIUM_STARS_PRICE)],
+        )
+    except Exception as e:
+        logging.exception("Erreur answer_invoice /premium")
+        await message.answer(f"? **Erreur lors de l'ouverture du paiement :** `{e}`")
 
 @dp.pre_checkout_query()
 async def on_pre_checkout(pre_checkout_query: PreCheckoutQuery):
