@@ -3,17 +3,27 @@ import logging
 import os
 import sqlite3
 import uuid
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import yt_dlp
 
-TOKEN = "9114777347:AAEQzO4hWNGH4JGCVDt8FEto8vq5btWjXXU"  # Ton vrai token BotFather
-ADMIN_ID = 7785533633        # ⚠️ Ton ID Telegram (celui qui apparaît dans les logs de polling)
+# Récupération sécurisée du token et de l'ID admin via les variables d'environnement Render
+TOKEN = os.environ.get("TOKEN", "9114777347:AAEIdalqbeGRl6cyqqSwCSkYTL6x7MzUx1I")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 7785533633)) 
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+# --- MINI SERVEUR WEB POUR RENDER (Évite l'erreur de port) ---
+async def handle(request):
+    return web.Response(text="Bot is running and alive 24/7!")
+
+app = web.Application()
+app.router.add_get("/", handle)
+async_runner = web.AppRunner(app)
 
 # --- BASE DE DONNÉES UTILISATEURS & STATS ---
 def init_db():
@@ -184,6 +194,14 @@ async def process_download(callback: types.CallbackQuery):
             os.remove(filename)
 
 async def main():
+    # Démarrage du serveur web sur le port assigné par Render (ou 10000 par défaut)
+    port = int(os.environ.get("PORT", 10000))
+    await async_runner.setup()
+    site = web.TCPSite(async_runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Web server successfully bound to port {port}")
+
+    # Lancement du bot Telegram en mode polling
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
