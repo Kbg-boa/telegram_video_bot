@@ -70,6 +70,18 @@ def init_db():
                 "INSERT INTO ads (title, text, url, btn_text) VALUES (?, ?, ?, ?)",
                 (ad["title"], ad["text"], ad["url"], ad["btn_text"])
             )
+    cursor.execute("PRAGMA table_info(users)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    migrations = {
+        "daily_count": "INTEGER DEFAULT 0",
+        "bonus_credits": "INTEGER DEFAULT 0",
+        "last_reset": "TEXT",
+        "is_premium": "INTEGER DEFAULT 0",
+        "referred_by": "INTEGER",
+    }
+    for col_name, col_def in migrations.items():
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_def}")
     conn.commit()
     conn.close()
 
