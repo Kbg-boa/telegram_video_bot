@@ -9,6 +9,7 @@ from datetime import date
 
 import yt_dlp
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandStart
 from aiogram.types import LabeledPrice, PreCheckoutQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -25,7 +26,7 @@ INSTAGRAM_COOKIES_FILE = os.environ.get("INSTAGRAM_COOKIES_FILE", "").strip()
 TIKTOK_PROXY = os.environ.get("TIKTOK_PROXY", "").strip()
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=TOKEN)
+bot = Bot(token=TOKEN, session=AiohttpSession(timeout=180))
 dp = Dispatcher()
 
 
