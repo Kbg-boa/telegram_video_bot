@@ -267,6 +267,7 @@ def build_ydl_opts(action: str, url: str, output_template: str) -> dict:
         opts["cookiefile"] = INSTAGRAM_COOKIES_FILE
 
     if "tiktok.com" in url:
+        opts.pop("http_headers", None)
         opts["verbose"] = True
         opts["quiet"] = False
         opts["no_warnings"] = False
