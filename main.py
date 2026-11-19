@@ -850,24 +850,53 @@ async def process_download(callback: types.CallbackQuery):
 
     await callback.message.edit_text(tr(lang, "downloading"))
     file_id = str(uuid.uuid4())
-    output_template = f"%(id)s_{file_id}.%(ext)s"
+    # Nom de sortie volontairement indépendant des métadonnées distantes.
+    # Certains extracteurs Facebook peuvent fournir un titre/nom contenant
+    # une URL CDN complète et ses paramètres, trop longs pour le système de fichiers.
+    output_template = f"download_{file_id}.%(ext)s"
     ydl_opts = build_ydl_opts(action, url, output_template)
 
     try:
         def download_media():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
+
+                # Récupère le fichier final réellement créé par yt-dlp/FFmpeg.
+                # Le glob reste limité au préfixe UUID propre à cette requête.
+                candidates = [
+                    path for path in glob.glob(f"download_{file_id}.*")
+                    if os.path.isfile(path)
+                    and not path.endswith((".part", ".ytdl", ".json", ".description"))
+                ]
+
                 if action == "dl_audio":
-                    filename = ydl.prepare_filename(info)
-                    return os.path.splitext(filename)[0] + ".mp3"
+                    preferred = [p for p in candidates if p.lower().endswith(".mp3")]
+                    if preferred:
+                        return preferred[0]
+                    raise FileNotFoundError("Fichier audio MP3 final introuvable après conversion.")
+
                 if action == "dl_image":
+                    image_exts = (".jpg", ".jpeg", ".png", ".webp")
+                    preferred = [p for p in candidates if p.lower().endswith(image_exts)]
+                    if preferred:
+                        return preferred[0]
+                    # Compatibilité avec les extracteurs qui retournent directement
+                    # un chemin image sans l'ajouter au glob attendu.
                     filename = ydl.prepare_filename(info)
-                    base, _ = os.path.splitext(filename)
-                    for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                        if os.path.exists(base + ext):
-                            return base + ext
+                    if os.path.isfile(filename):
+                        return filename
+                    raise FileNotFoundError("Fichier image téléchargé introuvable.")
+
+                video_exts = (".mp4", ".m4v", ".mov", ".mkv", ".webm")
+                preferred = [p for p in candidates if p.lower().endswith(video_exts)]
+                if preferred:
+                    preferred.sort(key=lambda p: (not p.lower().endswith(".mp4"), p))
+                    return preferred[0]
+
+                filename = ydl.prepare_filename(info)
+                if os.path.isfile(filename):
                     return filename
-                return ydl.prepare_filename(info)
+                raise FileNotFoundError("Fichier vidéo final introuvable après téléchargement.")
 
         filename = await asyncio.to_thread(download_media)
         ensure_under_telegram_limit(filename, lang=lang)
